@@ -11,7 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "9188093637:AAGER674iBI5fob-NV6sWIUjyTvOMeTTuR0")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "9188093637:AAFfD5YpypSxulv8nd8u51xYGsEDlZXHIHY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -213,10 +213,9 @@ async def send_user_dashboard(chat_id: int, user: types.User):
             InlineKeyboardButton(text="✨ Chiroyli Havola", callback_data="set_custom_alias")
         ],
         [
-            InlineKeyboardButton(text="🏆 TOP Reyting", callback_data="top_users"),
-            InlineKeyboardButton(text="🌙 Tinchlantirish rejimi", callback_data="toggle_dnd")
-        ],
-        [InlineKeyboardButton(text="🔄 Havolani yangilash", callback_data="reset_token")]
+            InlineKeyboardButton(text="🌙 Tinchlantirish rejimi", callback_data="toggle_dnd"),
+            InlineKeyboardButton(text="🔄 Havolani yangilash", callback_data="reset_token")
+        ]
     ]
     if await is_user_admin(user.id):
         buttons.append([InlineKeyboardButton(text="👑 Boshqaruv (Admin Panel)", callback_data="open_admin")])
@@ -260,7 +259,7 @@ async def handle_start(message: types.Message, command: CommandObject, state: FS
 
         cancel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_send")]])
         await message.answer(
-            "✍️ <b>Anonim xabaringizni yozing:</b>\n<i>(Matn, rasm, ovozli xabar yoki video yuborishingiz mumkin. Shaxsingiz sir saqlanadi)</i>",
+            "✍️ <b>Anonim xabaringizni yozing:</b>\n<i>(Matn, rasm, ovozli xabar yoki video yuborishingiz mumkin. Shaxsingiz to'liq sir saqlanadi)</i>",
             parse_mode="HTML", reply_markup=cancel_kb
         )
         return
@@ -341,17 +340,6 @@ async def cb_reset_token(callback: types.CallbackQuery):
     await callback.answer("✅ Havolangiz yangilandi!", show_alert=True)
     await send_user_dashboard(callback.message.chat.id, callback.from_user)
 
-@dp.callback_query(F.data == "top_users")
-async def cb_top_users(callback: types.CallbackQuery):
-    async with aiosqlite.connect("anon_bot.db") as db:
-        async with db.execute("SELECT full_name, received_count FROM users ORDER BY received_count DESC LIMIT 5") as cur:
-            top = await cur.fetchall()
-    text = "🏆 <b>TOP 5 Mashhur Foydalanuvchilar:</b>\n\n"
-    for i, (name, cnt) in enumerate(top, 1):
-        text += f"{i}. {name} — <b>{cnt} ta</b> xabar\n"
-    await callback.message.answer(text, parse_mode="HTML")
-    await callback.answer()
-
 @dp.callback_query(F.data.startswith("write_to:"))
 async def handle_write_again(callback: types.CallbackQuery, state: FSMContext):
     target_user_id = int(callback.data.split(":")[1])
@@ -360,21 +348,6 @@ async def handle_write_again(callback: types.CallbackQuery, state: FSMContext):
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_send")]])
     await callback.message.answer("✍️ <b>Xabaringizni yozing:</b>", parse_mode="HTML", reply_markup=cancel_kb)
     await callback.answer()
-
-@dp.callback_query(F.data.startswith("hint:"))
-async def cb_hint(callback: types.CallbackQuery):
-    msg_id = int(callback.data.split(":")[1])
-    user_id = callback.from_user.id
-    async with aiosqlite.connect("anon_bot.db") as db:
-        async with db.execute("SELECT sender_name, is_premium FROM message_threads WHERE recipient_id = ? AND message_id = ?", (user_id, msg_id)) as cur:
-            row = await cur.fetchone()
-    if row:
-        s_name, s_prem = row
-        first_letter = s_name[0].upper() if s_name else "A"
-        prem_status = "Bor ⭐" if s_prem else "Yo'q"
-        await callback.answer(f"🕵️‍♂️ HINT:\n\n• Ismining bosh harfi: {first_letter}***\n• Telegram Premium: {prem_status}", show_alert=True)
-    else:
-        await callback.answer("⚠️ Ma'lumot topilmadi.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("block:"))
 async def cb_block_user(callback: types.CallbackQuery):
@@ -407,16 +380,14 @@ async def process_anon_message(message: types.Message, state: FSMContext):
         
         forwarded = await message.copy_to(chat_id=target_user_id)
 
+        # Hint butunlay olib tashlandi, faqat javob yozish va bloklash qoldi
         kb_buttons = [
-            [
-                InlineKeyboardButton(text="✍️ Javob yozish", callback_data=f"write_to:{sender.id}"),
-                InlineKeyboardButton(text="🕵️‍♂️ Hint", callback_data=f"hint:{forwarded.message_id}")
-            ],
+            [InlineKeyboardButton(text="✍️ Javob yozish", callback_data=f"write_to:{sender.id}")],
             [InlineKeyboardButton(text="🚫 Bloklash", callback_data=f"block:{sender.id}")]
         ]
         footer = await bot.send_message(
             chat_id=target_user_id, 
-            text="↪️ <i>Javob yozish uchun xabarga Reply qiling yoki tugmani bosing:</i>", 
+            text="↪️ <i>Javob yozish uchun xabarga Reply qiling yoki pastdagi tugmani bosing:</i>", 
             parse_mode="HTML", 
             reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons)
         )
@@ -550,7 +521,6 @@ async def process_channel_set(message: types.Message, state: FSMContext):
     ch_raw = message.text.strip().replace("https://t.me/", "")
     channel = f"@{ch_raw.lstrip('@')}"
 
-    # Kanal mavjudligi va bot adminligini tekshirish
     try:
         member = await bot.get_chat_member(chat_id=channel, user_id=(await bot.get_me()).id)
         if member.status not in ["administrator", "creator"]:
@@ -601,7 +571,6 @@ async def process_broadcast(message: types.Message, state: FSMContext):
             pass
     await message.answer(f"✅ Rassilka yakunlandi! {sent} ta foydalanuvchiga yetkazildi.")
 
-# 24/7 rejim uchun doimiy ishlovchi mini-veb server (Render / Cloud keep-alive)
 async def health_check(request):
     return web.Response(text="Bot is running 24/7!")
 
