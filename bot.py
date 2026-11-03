@@ -11,9 +11,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# Yangi vaqtinchalik token standart qilib kiritildi
 BOT_TOKEN = os.getenv("BOT_TOKEN", "9188093637:AAFfD5YpypSxulv8nd8u51xYGsEDlZXHIHY")
 
-# FAQAT SIZNING TELEGRAM ID RAQAMINGIZ (O'zgarmas bosh admin)
+# FAQAT SIZNING TELEGRAM ID RAQAMINGIZ (O'zgarmas Asosiy Admin)
 SUPER_ADMIN_ID = 1609786019
 
 bot = Bot(token=BOT_TOKEN)
@@ -26,6 +27,8 @@ class AnonState(StatesGroup):
     waiting_for_broadcast = State()
     waiting_for_channel = State()
     waiting_for_custom_link = State()
+    waiting_for_new_admin = State()
+    waiting_for_del_admin = State()
 
 def generate_token(length=6):
     chars = string.ascii_letters + string.digits
@@ -47,9 +50,6 @@ async def init_db():
                 dnd_mode INTEGER DEFAULT 0
             )
         """)
-        # Begona tasodifiy adminlarni darhol oddiy foydalanuvchiga tushirish
-        await db.execute("UPDATE users SET is_admin = 0 WHERE user_id != ?", (SUPER_ADMIN_ID,))
-        
         await db.execute("""
             CREATE TABLE IF NOT EXISTS message_threads (
                 recipient_id INTEGER,
@@ -89,6 +89,9 @@ async def init_db():
             )
         """)
         await db.execute("INSERT OR IGNORE INTO settings VALUES ('spy_mode', '1')")
+        
+        # Asosiy adminni bazada ham faollashtirish
+        await db.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (SUPER_ADMIN_ID,))
         await db.commit()
 
 async def register_user(user: types.User, referrer_id: int = 0) -> str:
@@ -102,8 +105,8 @@ async def register_user(user: types.User, referrer_id: int = 0) -> str:
             row = await cur.fetchone()
             if row:
                 await db.execute(
-                    "UPDATE users SET full_name = ?, username = ?, is_admin = ? WHERE user_id = ?",
-                    (full_name, username, is_admin, user_id)
+                    "UPDATE users SET full_name = ?, username = ? WHERE user_id = ?",
+                    (full_name, username, user_id)
                 )
                 await db.commit()
                 return row[1] if row[1] else row[0]
@@ -437,7 +440,7 @@ async def render_admin_panel(chat_id: int):
     unique_admins = {a[0]: (a[1], a[2]) for a in admins}
     admin_list = "\n".join([f"• {val[0]} ({val[1]} | <code>{uid}</code>)" for uid, val in unique_admins.items()])
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    kb_list = [
         [
             InlineKeyboardButton(text=f"👁 Jonli kuzatuv: {'ON' if spy_mode == '1' else 'OFF'}", callback_data="admin_toggle_spy"),
             InlineKeyboardButton(text="📜 Oxirgi chatlar", callback_data="admin_recent_logs")
@@ -447,7 +450,16 @@ async def render_admin_panel(chat_id: int):
             InlineKeyboardButton(text="🔗 Kanal ulash", callback_data="admin_channel"),
             InlineKeyboardButton(text="❌ Kanalni uzish", callback_data="admin_del_channel")
         ]
-    ])
+    ]
+
+    # Admin qo'shish / o'chirish tugmalari FAQAT Asosiy Adminga (Sizga) ko'rinadi
+    if chat_id == SUPER_ADMIN_ID:
+        kb_list.append([
+            InlineKeyboardButton(text="➕ Admin qo'shish", callback_data="admin_add"),
+            InlineKeyboardButton(text="➖ Admin olish", callback_data="admin_del")
+        ])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
 
     text = (
         f"👑 <b>Admin Boshqaruv Paneli</b>\n\n"
@@ -569,6 +581,56 @@ async def process_broadcast(message: types.Message, state: FSMContext):
         except Exception:
             pass
     await message.answer(f"✅ Rassilka yakunlandi! {sent} ta foydalanuvchiga yetkazildi.")
+
+# ================= YANGI ADMIN QO'SHISH/OLISH FUNKSIYALARI =================
+
+@dp.callback_query(F.data == "admin_add")
+async def cb_admin_add(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != SUPER_ADMIN_ID:
+        return await callback.answer("❌ Faqat Asosiy Admin buni qila oladi!", show_alert=True)
+    await state.set_state(AnonState.waiting_for_new_admin)
+    await callback.message.answer("➕ <b>Yangi adminning Telegram ID raqamini yuboring:</b>\n<i>Masalan: 123456789</i>", parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AnonState.waiting_for_new_admin)
+async def process_admin_add(message: types.Message, state: FSMContext):
+    await state.clear()
+    try:
+        new_admin_id = int(message.text.strip())
+        async with aiosqlite.connect("anon_bot.db") as db:
+            await db.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (new_admin_id,))
+            await db.commit()
+        await message.answer(f"✅ <b>{new_admin_id}</b> ID egasi muvaffaqiyatli admin qilib tayinlandi!", parse_mode="HTML")
+        await render_admin_panel(message.chat.id)
+    except ValueError:
+        await message.answer("❌ Noto'g'ri format! Faqat ID raqam yuboring.")
+
+@dp.callback_query(F.data == "admin_del")
+async def cb_admin_del(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != SUPER_ADMIN_ID:
+        return await callback.answer("❌ Faqat Asosiy Admin buni qila oladi!", show_alert=True)
+    await state.set_state(AnonState.waiting_for_del_admin)
+    await callback.message.answer("➖ <b>Adminlikdan olinadigan foydalanuvchining Telegram ID raqamini yuboring:</b>", parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AnonState.waiting_for_del_admin)
+async def process_admin_del(message: types.Message, state: FSMContext):
+    await state.clear()
+    try:
+        del_admin_id = int(message.text.strip())
+        if del_admin_id == SUPER_ADMIN_ID:
+            await message.answer("❌ Asosiy adminni (o'zingizni) o'chirib bo'lmaydi!")
+            return
+        
+        async with aiosqlite.connect("anon_bot.db") as db:
+            await db.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (del_admin_id,))
+            await db.commit()
+        await message.answer(f"✅ <b>{del_admin_id}</b> ID egasi adminlikdan olindi!", parse_mode="HTML")
+        await render_admin_panel(message.chat.id)
+    except ValueError:
+        await message.answer("❌ Noto'g'ri format! Faqat ID raqam yuboring.")
+
+# =========================================================================
 
 async def health_check(request):
     return web.Response(text="Bot is running 24/7!")
